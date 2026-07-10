@@ -156,6 +156,10 @@ providers =
 opensubtitles = 
 tvsubtitles = 
 
+[Audio.Whisper]
+detect_language = False
+model = base
+
 [Sonarr]
 host = localhost
 port = 8989

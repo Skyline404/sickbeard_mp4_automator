@@ -243,6 +243,10 @@ class ReadSettings:
         'Subtitle.FFSubsync': {
             'enabled': False,
         },
+        'Audio.Whisper': {
+            'detect_language': False,
+            'model': 'base',
+        },
         'Subtitle.Subliminal': {
             'download-subs': False,
             'download-forced-subs': False,
@@ -704,6 +708,11 @@ class ReadSettings:
         # FFSubsync
         section = "Subtitle.FFSubsync"
         self.ffsubsync = config.getboolean(section, "enabled")
+
+        # Whisper
+        section = "Audio.Whisper"
+        self.whisper_detect_language = config.getboolean(section, "detect_language")
+        self.whisper_model = config.get(section, "model")
 
         # Subliminal
         section = "Subtitle.Subliminal"

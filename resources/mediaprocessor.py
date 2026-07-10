@@ -29,6 +29,11 @@ except ImportError:
     subliminal = None
     guessit = None
     Language = None
+try:
+    import whisper
+    from whisper.utils import get_writer
+except ImportError:
+    whisper = None
 
 # Custom Functions
 from resources.custom import *
@@ -145,8 +150,61 @@ class MediaProcessor:
         downloaded_subs = []
 
         info = info or self.isValidSource(inputfile, tagdata=tagdata)
+        
+        if info:
+            if getattr(self.settings, 'whisper_detect_language', False):
+                self.detectAudioLanguages(inputfile, info)
+                self.detectSubtitleLanguages(inputfile, info)
 
-        self.settings.output_dir = self.settings.output_dir if self.outputDirHasFreeSpace(inputfile) else None
+        if '/home/andrey/Downloads/Torrents' in inputfile:
+            base_dir = os.path.dirname(inputfile)
+            parent_dir = os.path.dirname(base_dir)
+            folder_name = os.path.basename(base_dir)
+            
+            try:
+                import guessit
+                guess = guessit.guessit(folder_name, options={'type': 'episode'})
+                if guess.get('title'):
+                    clean_title = str(guess['title'])
+                    year = ""
+                    try:
+                        import sys
+                        if 'venv/lib/python3.14/site-packages' not in sys.path:
+                            sys.path.append('venv/lib/python3.14/site-packages')
+                        import tmdbsimple as tmdb
+                        tmdb.API_KEY = '45e408d2851e968e6e4d0353ce621c66'
+                        search = tmdb.Search()
+                        response = search.tv(query=clean_title)
+                        if response['results']:
+                            best_match = response['results'][0]
+                            for s in response['results']:
+                                if s.get('original_language') == 'ja':
+                                    best_match = s
+                                    break
+                            first_air = best_match.get('first_air_date', '')
+                            if first_air and len(first_air) >= 4:
+                                year = first_air[:4]
+                    except Exception:
+                        pass
+                        
+                    if year:
+                        folder_name = f"{clean_title} ({year})"
+                    else:
+                        folder_name = clean_title
+            except Exception:
+                pass
+                
+            mapped_dir = os.path.join(parent_dir, folder_name).replace('/home/andrey/Downloads/Torrents', '/home/andrey/Videos')
+            if not os.path.exists(mapped_dir):
+                try:
+                    os.makedirs(mapped_dir)
+                except:
+                    pass
+            import tempfile
+            self.settings.output_dir = tempfile.gettempdir()
+            self.settings.moveto = mapped_dir
+        else:
+            self.settings.output_dir = self.settings.output_dir if self.outputDirHasFreeSpace(inputfile) else None
 
         if info:
             try:
@@ -452,7 +510,7 @@ class MediaProcessor:
                     'x': info.video.video_width}
 
         return {'y': 0,
-                'x': 0}
+                    'x': 0}
 
     # Estimate the video bitrate
     def estimateVideoBitrate(self, info, baserate=64000, tolerance=0.95):
@@ -1280,6 +1338,8 @@ class MediaProcessor:
         except:
             self.log.exception("Unable to download subitltes [download-subs].")
 
+
+
         ###############################################################
         # External subtitles
         ###############################################################
@@ -1882,6 +1942,121 @@ class MediaProcessor:
 
         return video
 
+    def detectAudioLanguages(self, inputfile, info):
+        if not self.settings.whisper_detect_language:
+            return
+            
+        if not whisper:
+            self.log.error("Whisper is not installed. Please install it with 'pip install openai-whisper'.")
+            return
+
+        for a in info.audio:
+            lang = a.metadata.get('language')
+            if not lang or lang.lower() in ['und', 'unknown', '']:
+                try:
+                    self.log.info("Audio stream %d has unknown language. Using Whisper to detect..." % a.index)
+                    # Extract 30 seconds of audio starting from 10 minutes in (or 0 if video is shorter)
+                    import tempfile
+                    import subprocess
+                    
+                    duration = float(info.format.duration) if hasattr(info, 'format') and hasattr(info.format, 'duration') and info.format.duration else 0
+                    start_time = "00:10:00" if duration > 600 else "00:00:00"
+                    
+                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as temp_audio:
+                        cmd = [
+                            self.settings.ffmpeg,
+                            '-y',
+                            '-ss', start_time,
+                            '-i', inputfile,
+                            '-map', '0:%d' % a.index,
+                            '-t', '30',
+                            '-vn',
+                            '-ac', '1',
+                            '-ar', '16000',
+                            temp_audio.name
+                        ]
+                        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        
+                        model = whisper.load_model(self.settings.whisper_model)
+                        audio = whisper.load_audio(temp_audio.name)
+                        audio = whisper.pad_or_trim(audio)
+                        mel = whisper.log_mel_spectrogram(audio).to(model.device)
+                        
+                        _, probs = model.detect_language(mel)
+                        detected_lang = max(probs, key=probs.get)
+                        
+                        if detected_lang:
+                            self.log.info("Whisper detected language '%s' for audio stream %d." % (detected_lang, a.index))
+                            # Update the metadata in memory
+                            # babelfish.Language uses 3-letter codes usually, or we can just use the 2-letter code detected
+                            a.metadata['language'] = detected_lang
+                        else:
+                            self.log.error("Whisper failed to detect language for audio stream %d." % a.index)
+                except Exception as e:
+                    self.log.exception("Failed to detect audio language for stream %d: %s" % (a.index, e))
+
+    def detectSubtitleLanguages(self, inputfile, info):
+        if not getattr(self.settings, 'whisper_detect_language', False):
+            return
+
+        try:
+            from langdetect import detect
+        except ImportError:
+            self.log.error("langdetect is not installed. Please install it with 'pip install langdetect'.")
+            return
+
+        import tempfile
+        import subprocess
+        import os
+        from babelfish import Language
+
+        for s in info.subtitle:
+            lang = s.metadata.get('language')
+            if not lang or lang.lower() in ['und', 'unknown', '']:
+                try:
+                    self.log.info("Subtitle stream %d has unknown language. Using langdetect..." % s.index)
+                    with tempfile.NamedTemporaryFile(suffix=".srt", delete=False) as temp_sub:
+                        temp_sub_path = temp_sub.name
+
+                    cmd = [
+                        self.settings.ffmpeg,
+                        '-y',
+                        '-i', inputfile,
+                        '-map', '0:%d' % s.index,
+                        '-c:s', 'srt',
+                        temp_sub_path
+                    ]
+                    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    
+                    if os.path.exists(temp_sub_path):
+                        with open(temp_sub_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            lines = f.readlines()
+                        
+                        text_blocks = []
+                        for line in lines:
+                            line = line.strip()
+                            if not line or '-->' in line or line.isdigit():
+                                continue
+                            text_blocks.append(line)
+                            
+                        full_text = " ".join(text_blocks)
+                        if len(full_text) > 500:
+                            full_text = full_text[len(full_text)//4:len(full_text)*3//4]
+                            
+                        if full_text:
+                            detected_lang_code = detect(full_text)
+                            try:
+                                detected_lang = Language.fromalpha2(detected_lang_code)
+                                s.metadata['language'] = detected_lang.alpha3
+                                self.log.info("Detected subtitle language for stream %d: %s" % (s.index, detected_lang.alpha3))
+                            except ValueError:
+                                self.log.warning("Could not map detected language code '%s' for stream %d." % (detected_lang_code, s.index))
+                                
+                    if os.path.exists(temp_sub_path):
+                        os.remove(temp_sub_path)
+                except Exception as e:
+                    self.log.exception("Failed to detect subtitle language for stream %d: %s" % (s.index, e))
+
     # Download subtitles using subliminal
     def downloadSubtitles(self, inputfile, existing_subtitle_streams, swl, original=None, tagdata=None):
         if (self.settings.downloadsubs or self.settings.downloadforcedsubs) and subliminal and guessit and Language:
@@ -2425,6 +2600,27 @@ class MediaProcessor:
         input_dir, filename = os.path.split(path)
         filename, input_extension = os.path.splitext(filename)
         input_extension = input_extension[1:]
+
+        try:
+            import guessit
+            guess = guessit.guessit(filename, options={'episode_prefer_number': True})
+            if guess.get('title'):
+                new_filename = str(guess['title'])
+                if guess.get('season') and guess.get('episode'):
+                    new_filename += " - S%02dE%02d" % (int(guess['season']), int(guess['episode']))
+                elif guess.get('episode'):
+                    if isinstance(guess['episode'], list):
+                        eps = "-".join(["%02d" % int(e) for e in guess['episode']])
+                        new_filename += f" - {eps}"
+                    else:
+                        ep = int(guess['episode'])
+                        new_filename += " - E%02d" % ep
+                
+                if new_filename != str(guess['title']):
+                    filename = new_filename
+        except Exception:
+            pass
+
         return input_dir, filename, input_extension.lower()
 
     # Process a file with QTFastStart, removing the original file
