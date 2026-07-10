@@ -238,3 +238,5 @@ pip-log.txt
 ## VS Code
 #################
 .vscode
+processed_files.txt
+wrapper_log.txt
