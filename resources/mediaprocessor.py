@@ -6,6 +6,23 @@ import sys
 import shutil
 import logging
 import re
+import subprocess
+
+def cow_copy(src, dst):
+    try:
+        subprocess.check_call(['cp', '--reflink=auto', src, dst])
+    except Exception:
+        shutil.copy(src, dst)
+
+def cow_move(src, dst):
+    try:
+        os.rename(src, dst)
+    except OSError:
+        try:
+            subprocess.check_call(['cp', '--reflink=auto', src, dst])
+            os.remove(src)
+        except Exception:
+            shutil.move(src, dst)
 from converter import Converter, FFMpegConvertError, ConverterError
 from converter.avcodecs import BaseCodec
 from resources.extensions import subtitle_codec_extensions, bad_sub_extensions
@@ -262,7 +279,7 @@ class MediaProcessor:
                     try:
                         outputfile = os.path.join(self.settings.output_dir, os.path.split(inputfile)[1])
                         self.log.debug("Outputfile set to %s." % outputfile)
-                        shutil.copy(inputfile, outputfile)
+                        cow_copy(inputfile, outputfile)
                     except KeyboardInterrupt:
                         raise
                     except:
@@ -2187,7 +2204,7 @@ class MediaProcessor:
             self.log.info("Output file is in output_dir %s, moving back to original directory %s." % (self.settings.output_dir, input_dir))
             self.log.debug("New outputfile %s." % (newoutputfile))
             try:
-                shutil.move(outputfile, newoutputfile)
+                cow_move(outputfile, newoutputfile)
             except KeyboardInterrupt:
                 raise
             except:
@@ -2195,7 +2212,7 @@ class MediaProcessor:
                 try:
                     if os.path.exists(newoutputfile):
                         self.removeFile(newoutputfile, 0, 0)
-                    shutil.move(outputfile, newoutputfile)
+                    cow_move(outputfile, newoutputfile)
                 except KeyboardInterrupt:
                     raise
                 except:
@@ -2668,7 +2685,7 @@ class MediaProcessor:
                 if not os.path.exists(d):
                     os.makedirs(d)
                 try:
-                    shutil.copy(inputfile, d)
+                    cow_copy(inputfile, d)
                     self.log.info("%s copied to %s." % (inputfile, d))
                     files.append(os.path.join(d, os.path.split(inputfile)[1]))
                 except KeyboardInterrupt:
@@ -2679,11 +2696,11 @@ class MediaProcessor:
                         if os.path.exists(os.path.join(d, os.path.split(inputfile)[1])):
                             self.removeFile(os.path.join(d, os.path.split(inputfile)[1]), 0, 0)
                         try:
-                            shutil.copy(inputfile.decode(sys.getfilesystemencoding()), d)
+                            cow_copy(inputfile.decode(sys.getfilesystemencoding()), d)
                         except KeyboardInterrupt:
                             raise
                         except:
-                            shutil.copy(inputfile, d)
+                            cow_copy(inputfile, d)
                         self.log.info("%s copied to %s." % (inputfile, d))
                         files.append(os.path.join(d, os.path.split(inputfile)[1]))
                     except KeyboardInterrupt:
@@ -2697,7 +2714,7 @@ class MediaProcessor:
             if not os.path.exists(moveto):
                 os.makedirs(moveto)
             try:
-                shutil.move(inputfile, moveto)
+                cow_move(inputfile, moveto)
                 self.log.info("%s moved to %s." % (inputfile, moveto))
                 files[0] = os.path.join(moveto, os.path.basename(inputfile))
             except KeyboardInterrupt:
@@ -2707,7 +2724,7 @@ class MediaProcessor:
                 try:
                     if os.path.exists(os.path.join(moveto, os.path.basename(inputfile))):
                         self.removeFile(os.path.join(moveto, os.path.basename(inputfile)), 0, 0)
-                    shutil.move(inputfile.decode(sys.getfilesystemencoding()), moveto)
+                    cow_move(inputfile.decode(sys.getfilesystemencoding()), moveto)
                     self.log.info("%s moved to %s." % (inputfile, moveto))
                     files[0] = os.path.join(moveto, os.path.basename(inputfile))
                 except KeyboardInterrupt:
