@@ -1,5 +1,8 @@
 import os
 import sys
+import urllib.request
+import urllib.parse
+
 import requests
 import enum
 import tempfile
@@ -178,6 +181,73 @@ class Metadata:
 
         return None
 
+
+    def generate_aniskip_chapters(self, title, episode):
+        # Find mal_id
+        try:
+            from resources.lang import getAlpha2BCode # Just an import check
+            import json, tempfile
+            query = '''
+            query ($search: String) {
+              Media (search: $search, type: ANIME) {
+                idMal
+                title { romaji }
+              }
+            }
+            '''
+            variables = {'search': title}
+            url = "https://graphql.anilist.co"
+            req = urllib.request.Request(url, method="POST")
+            req.add_header('Content-Type', 'application/json')
+            req.add_header('Accept', 'application/json')
+            req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
+            data = json.dumps({'query': query, 'variables': variables}).encode('utf-8')
+            mal_id = None
+            with urllib.request.urlopen(req, data=data, timeout=5) as response:
+                res = json.loads(response.read().decode())
+                if res.get('data') and res['data'].get('Media'):
+                    mal_id = res['data']['Media']['idMal']
+            
+            if not mal_id:
+                self.log.debug("AniSkip: Could not find MAL ID for " + title)
+                return None
+                
+            self.log.info("AniSkip: Found MAL ID %s for %s" % (mal_id, title))
+            
+            # Fetch skip times
+            skip_url = "https://api.aniskip.com/v2/skip-times/%s/%s?types=op&types=ed&types=recap&types=mixed-op&types=mixed-ed&episodeLength=0" % (mal_id, episode)
+            req_skip = urllib.request.Request(skip_url, headers={'User-Agent': 'Mozilla/5.0'})
+            
+            chapters = []
+            with urllib.request.urlopen(req_skip, timeout=5) as response:
+                data = json.loads(response.read().decode())
+                if data.get('found'):
+                    chapters = data['results']
+                    
+            if not chapters:
+                self.log.debug("AniSkip: No skip times found for episode %s" % episode)
+                return None
+                
+            self.log.info("AniSkip: Found %d skip times" % len(chapters))
+            
+            # Generate FFmetadata
+            fd, path = tempfile.mkstemp(suffix=".txt", prefix="aniskip_")
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                f.write(";FFMETADATA1\n\n")
+                for st in chapters:
+                    start = int(st['interval']['startTime'] * 1000)
+                    end = int(st['interval']['endTime'] * 1000)
+                    c_type = st['skipType'].upper()
+                    if c_type == 'ED': c_type = 'Ending'
+                    elif c_type == 'OP': c_type = 'Opening'
+                    elif c_type == 'MIXED-OP': c_type = 'Opening'
+                    elif c_type == 'MIXED-ED': c_type = 'Ending'
+                    f.write("[CHAPTER]\nTIMEBASE=1/1000\nSTART=%d\nEND=%d\ntitle=%s\n\n" % (start, end, c_type))
+            return path
+        except Exception as e:
+            self.log.exception("AniSkip error:")
+            return None
+
     def writeTags(self, path, inputfile, converter, artwork=True, thumbnail=False, width=None, height=None, cues_to_front=False):
         self.log.info("Tagging file: %s." % path)
         if width and height:
@@ -213,8 +283,15 @@ class Metadata:
                 if artwork:
                     coverpath = self.getArtwork(path, inputfile, thumbnail=thumbnail)
 
+                chapters_path = None
+                if self.mediatype == MediaType.TV and getattr(self, 'season', None) and getattr(self, 'episode', None) and getattr(self, 'showname', None):
+                    chapters_path = self.generate_aniskip_chapters(self.showname, self.episode)
+                
                 try:
-                    conv = converter.tag(path, metadata, coverpath, cues_to_front=cues_to_front)
+                    conv = converter.tag(path, metadata, coverpath, cues_to_front=cues_to_front, chapters_path=chapters_path)
+                    if chapters_path and os.path.exists(chapters_path):
+                        os.remove(chapters_path)
+
                 except KeyboardInterrupt:
                     raise
                 except:

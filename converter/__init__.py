@@ -211,7 +211,7 @@ class Converter(object):
 
         return optlist
 
-    def tag(self, infile, metadata={}, coverpath=None, cues_to_front=False):
+    def tag(self, infile, metadata={}, coverpath=None, cues_to_front=False, chapters_path=None):
         """
         Tag media file (infile) with metadata dictionary and optional cover art
         """
@@ -223,7 +223,11 @@ class Converter(object):
             i += 1
 
         os.rename(outfile, infile)
-        opts = ['-i', infile, '-map', '0:v?', '-c:v', 'copy', '-map', '0:a?', '-c:a', 'copy', '-map', '0:s?', '-c:s', 'copy', '-map', '0:t?', '-c:t', 'copy']
+        opts = ['-i', infile]
+        if chapters_path and os.path.exists(chapters_path):
+            opts = ['-i', infile, '-i', chapters_path, '-map_metadata', '1']
+        opts.extend(['-map', '0:v?', '-c:v', 'copy', '-map', '0:a?', '-c:a', 'copy', '-map', '0:s?', '-c:s', 'copy', '-map', '0:t?', '-c:t', 'copy'])
+
 
         info = self.ffmpeg.probe(infile)
         i = len(info.attachment)
