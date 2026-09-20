@@ -1,6 +1,9 @@
 import sys, os, re, json, tempfile, urllib.request, subprocess
 
+MAL_ID_CACHE = {}
+
 def get_mal_id(title):
+    if title in MAL_ID_CACHE: return MAL_ID_CACHE[title]
     query = '''query ($search: String) { Media (search: $search, type: ANIME) { idMal } }'''
     variables = {'search': title}
     url = "https://graphql.anilist.co"
@@ -8,7 +11,9 @@ def get_mal_id(title):
     try:
         with urllib.request.urlopen(req, data=json.dumps({'query': query, 'variables': variables}).encode(), timeout=5) as resp:
             res = json.loads(resp.read().decode())
-            if res.get('data') and res['data'].get('Media'): return res['data']['Media']['idMal']
+            if res.get('data') and res['data'].get('Media'):
+                MAL_ID_CACHE[title] = res['data']['Media']['idMal']
+                return MAL_ID_CACHE[title]
     except: pass
     return None
 
@@ -21,6 +26,8 @@ def process_aniskip(filepath):
     episode = match.group(2).strip()
     mal_id = get_mal_id(title)
     if not mal_id: return
+    
+    print(f"[{episode}] Requesting...", end=" ", flush=True)
     skip_url = f"https://api.aniskip.com/v2/skip-times/{mal_id}/{episode}?types=op&types=ed&types=recap&types=mixed-op&types=mixed-ed&episodeLength=0"
     req_skip = urllib.request.Request(skip_url, headers={'User-Agent': 'Mozilla/5.0'})
     
@@ -29,8 +36,11 @@ def process_aniskip(filepath):
         with urllib.request.urlopen(req_skip, timeout=5) as resp:
             data = json.loads(resp.read().decode())
             if data.get('found'): chapters = data['results']
-    except: return
-    if not chapters: return
+    except: pass
+    
+    if not chapters:
+        print("No skip data.")
+        return
     
     try:
         dur = float(subprocess.check_output(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", filepath]).decode().strip())
@@ -52,6 +62,7 @@ def process_aniskip(filepath):
             elif t == 'mixed-op': c_type = "Opening"
             elif t == 'mixed-ed': c_type = "Ending"
             else: c_type = "Recap"
+            
             if start - current_time > 1.0:
                 f.write(f"[CHAPTER]\nTIMEBASE=1/1000\nSTART={int(current_time*1000)}\nEND={int(start*1000)}\ntitle=Episode\n\n")
             f.write(f"[CHAPTER]\nTIMEBASE=1/1000\nSTART={int(start*1000)}\nEND={int(end*1000)}\ntitle={c_type}\n\n")
@@ -63,13 +74,21 @@ def process_aniskip(filepath):
     subprocess.run(["ffmpeg", "-y", "-i", filepath, "-i", path, "-map_metadata", "1", "-map_chapters", "1", "-map", "0", "-c", "copy", out_file], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if os.path.exists(out_file) and os.path.getsize(out_file) > 0:
         os.replace(out_file, filepath)
+        print(f"Added {len(chapters)} skips!")
+    else:
+        print("Failed to apply.")
     os.remove(path)
 
 def process_path(target_path):
     if os.path.isfile(target_path): process_aniskip(target_path)
     elif os.path.isdir(target_path):
+        files_to_process = []
         for root, _, files in os.walk(target_path):
-            for f in files: process_aniskip(os.path.join(root, f))
+            files_to_process.extend([os.path.join(root, f) for f in files if f.endswith('.mkv') or f.endswith('.mp4')])
+        files_to_process.sort()
+        for i, f in enumerate(files_to_process, 1):
+            print(f"({i}/{len(files_to_process)}) ", end="")
+            process_aniskip(f)
 
 if __name__ == "__main__":
     if len(sys.argv) > 1: process_path(sys.argv[1])
